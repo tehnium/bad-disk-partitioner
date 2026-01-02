@@ -1,0 +1,134 @@
+#!/bin/bash
+# Bad Disk Partitioner - ncurses HDD utility with bad block scanning, PDF report, and SMART check
+# Maintainer: Tehnium
+# English version
+
+### CONFIG ###
+BLOCK_SIZE=4096
+OFFSET_MB=100
+MIN_GOOD_GB=5
+START_BLOCK=2048
+BADFILE="/tmp/badblocks.txt"
+REPORT_TXT="/tmp/bad-disk-report.txt"
+REPORT_PDF="/tmp/bad-disk-report.pdf"
+LOGFILE="/var/log/bad-disk-partitioner.log"
+
+# Redirect stdout/stderr to log
+exec > >(tee -a "$LOGFILE") 2>&1
+
+log() { echo "[$(date '+%F %T')] $1"; }
+
+### CHECK DEPENDENCIES ###
+REQUIRED_CMDS=(dialog lsblk badblocks parted blockdev awk sort grep enscript ps2pdf smartctl)
+APT_PACKAGES=(dialog util-linux e2fsprogs parted coreutils gawk enscript ghostscript smartmontools)
+
+for cmd in "${REQUIRED_CMDS[@]}"; do
+  if ! command -v "$cmd" &>/dev/null; then
+    log "Installing missing dependencies..."
+    sudo apt update && sudo apt install -y "${APT_PACKAGES[@]}"
+    break
+  fi
+done
+
+### SELECT DISK ###
+DISK_LIST=()
+i=1
+while read -r name size model; do
+  DISK_LIST+=("$i" "/dev/$name  [$model, $size]")
+  ((i++))
+done < <(lsblk -d -o NAME,SIZE,MODEL --noheadings)
+
+CHOICE=$(dialog \
+  --clear --title "Select Disk" \
+  --menu "Choose the disk to check" 20 70 10 \
+  "${DISK_LIST[@]}" \
+  3>&1 1>&2 2>&3)
+
+[ -z "$CHOICE" ] && exit 1
+DISK=$(echo "${DISK_LIST[$((CHOICE*2-1))]}" | awk '{print $1}')
+log "Selected disk: $DISK"
+
+### CHECK EXISTING PARTITIONS ###
+if lsblk "$DISK" -n -o NAME | grep -q "$(basename "$DISK")[0-9]"; then
+  dialog --msgbox "The disk already has partitions.\nOperation aborted." 8 50
+  log "Abort: existing partitions"
+  exit 1
+fi
+
+### CONFIRMATION ###
+dialog --yesno "⚠️ WARNING ⚠️\n\nDisk $DISK will be scanned and partitioned.\nALL DATA WILL BE LOST.\n\nProceed?" 12 60
+[ $? -ne 0 ] && log "Canceled by user" && exit 1
+
+### SMART CHECK ###
+if command -v smartctl &>/dev/null; then
+  log "Checking SMART status..."
+  SMART_REPORT="/tmp/smart-$DISK.txt"
+  sudo smartctl -a "$DISK" > "$SMART_REPORT"
+  dialog --title "SMART Report" --textbox "$SMART_REPORT" 20 80
+fi
+
+### BADBLOCKS SCAN ###
+TOTAL_BLOCKS=$(blockdev --getsz "$DISK")
+OFFSET_BLOCKS=$((OFFSET_MB * 1024 * 1024 / BLOCK_SIZE))
+MIN_GOOD_BLOCKS=$((MIN_GOOD_GB * 1024 * 1024 * 1024 / BLOCK_SIZE))
+
+dialog --infobox "Scanning for bad blocks...\nThis may take a long time..." 6 50
+log "Starting badblocks scan"
+
+# badblocks with real-time gauge
+{
+  badblocks -b $BLOCK_SIZE -sv "$DISK" | while read line; do
+    if [[ "$line" =~ ([0-9]+)% ]]; then
+        PERCENT="${BASH_REMATCH[1]}"
+        echo $PERCENT
+    fi
+  done
+} | dialog --title "Bad Blocks Scan" --gauge "Scanning..." 10 70 0
+
+log "Scan completed, saved to $BADFILE"
+
+### EXPORT REPORT ###
+{
+  echo "Bad Disk Partition Report"
+  echo "Date: $(date)"
+  echo "Disk: $DISK"
+  echo "Total blocks: $TOTAL_BLOCKS"
+  echo
+  echo "Bad blocks:"
+  cat "$BADFILE"
+} > "$REPORT_TXT"
+
+enscript -B -o - "$REPORT_TXT" | ps2pdf - "$REPORT_PDF"
+log "PDF report generated: $REPORT_PDF"
+
+### PARTITION CREATION ###
+log "Creating GPT partition table..."
+parted -s "$DISK" mklabel gpt
+
+CURRENT_START=$START_BLOCK
+sort -n "$BADFILE" | while read BAD; do
+  END_BLOCK=$((BAD - OFFSET_BLOCKS))
+  GOOD_SIZE=$((END_BLOCK - CURRENT_START))
+
+  if [ "$GOOD_SIZE" -ge "$MIN_GOOD_BLOCKS" ]; then
+    START_MB=$((CURRENT_START * BLOCK_SIZE / 1024 / 1024))
+    END_MB=$((END_BLOCK * BLOCK_SIZE / 1024 / 1024))
+    log "Creating partition ${START_MB}MB - ${END_MB}MB"
+    parted -s "$DISK" mkpart primary "${START_MB}MB" "${END_MB}MB"
+  fi
+
+  CURRENT_START=$((BAD + OFFSET_BLOCKS))
+done
+
+# last good area
+REMAINING=$((TOTAL_BLOCKS - CURRENT_START))
+if [ "$REMAINING" -ge "$MIN_GOOD_BLOCKS" ]; then
+  START_MB=$((CURRENT_START * BLOCK_SIZE / 1024 / 1024))
+  END_MB=$((TOTAL_BLOCKS * BLOCK_SIZE / 1024 / 1024))
+  log "Creating final partition ${START_MB}MB - ${END_MB}MB"
+  parted -s "$DISK" mkpart primary "${START_MB}MB" "${END_MB}MB"
+fi
+
+dialog --msgbox "Operation completed.\n\nLog: $LOGFILE\nPDF report: $REPORT_PDF\nPartitions are NOT formatted." 12 70
+log "Script finished"
+

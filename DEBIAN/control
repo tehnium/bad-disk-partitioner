@@ -1,0 +1,9 @@
+Package: bad-disk-partitioner
+Version: 1.1
+Section: admin
+Priority: optional
+Architecture: all
+Depends: bash, dialog, util-linux, e2fsprogs, parted, coreutils, gawk, enscript, ghostscript, smartmontools
+Maintainer: Tehnium
+Description: Complete ncurses utility for HDD partitioning with bad blocks scanning, PDF report, and SMART check.
+
