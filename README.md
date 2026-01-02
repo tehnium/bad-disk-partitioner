@@ -18,4 +18,11 @@ Build the `.deb` package:
 chmod +x build-bad-disk-deb.sh
 ./build-bad-disk-deb.sh
 sudo dpkg -i /tmp/bad-disk-partitioner_1.1.deb
+or download and install:
+bad-disk-partitioner.deb
 
+
+## After install launch in terminal
+sudo bad-disk-partitioner
+
+Is first my project so... dont shuuuut me down :))))
