@@ -11,7 +11,7 @@ Partition Management: Just like the original RBD, this tool destroys all existin
 
 Drive Selection: It lists all active HDDs so you can choose which one to scan.
 
-Scanning Logic: When a bad sector is detected, the app creates an unformatted partition that ends 100 MB before the bad sector and starts a new one 100 MB after it. To avoid excessive fragmentation, a new partition will not be created if the bad sectors are less than 10 GB apart.
+Scanning Logic: When a bad sector is detected, the app creates an unformatted partition that ends 500 MB before the bad sector and starts a new one 500 MB after it. To avoid excessive fragmentation, a new partition will not be created if the bad sectors are less than 10 GB apart.
 
 
 ## Disclaimer:
@@ -63,3 +63,46 @@ sudo dpkg -i bad-disk-partitioner_1.0_all.deb
 
 # If dependencies are missing:
 sudo apt install -f
+
+## ▶️ Usage
+    ⚠️ Must be run as root — the tool needs low-level disk access.
+
+The GUI will guide you through:
+
+    Mode selection (SCAN ONLY or AGGRESSIVE)
+    Disk selection (only disks without partitions are allowed)
+    Real-time scan with progress
+    Automatic partitioning (AGGRESSIVE mode only)
+
+## 🛠️ Build from source
+git clone https://github.com/your-username/bad-disk-partitioner.git
+cd bad-disk-partitioner
+./build-deb.sh
+sudo dpkg -i bad-disk-partitioner_1.0_all.deb
+
+## ⚠️ Warnings
+
+    AGGRESSIVE MODE DESTROYS ALL DATA on the selected disk.
+    Always backup important data before scanning.
+    Do not interrupt the scan — it may leave the disk in an inconsistent state.
+    This tool does not detect "slow" sectors — only sectors that fail read/write tests.
+
+## 📁 Output
+
+    Bad blocks list: saved in a temporary file (shown at end of scan)
+    Partitions: created but not formatted — you can choose your filesystem later
+
+## 🤝 Contributing
+
+Contributions are welcome! Please open an issue or submit a PR.
+
+## 📜 License
+
+This project is licensed under GNU General Public License v3.0 — see LICENSE
+ for details.
+
+## 🙏 Acknowledgments
+
+    Uses badblocks (from e2fsprogs) for low-level scanning
+    Inspired by disk diagnostic tools for data recovery professionals
+Thanks to QWEN.AI
