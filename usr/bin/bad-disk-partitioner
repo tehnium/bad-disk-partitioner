@@ -1,134 +1,455 @@
-#!/bin/bash
-# Bad Disk Partitioner - ncurses HDD utility with bad block scanning, PDF report, and SMART check
-# Maintainer: Tehnium
-# English version
+#!/usr/bin/env python3
+# Bad Disk Partitioner - Professional GUI Tool
+# Features: SCAN ONLY, AGGRESSIVE, SMART, Smart Partitioning
+import os
+import sys
+import subprocess
+import time
+import tkinter as tk
+from tkinter import ttk, messagebox
+from datetime import datetime
+import tempfile
+import shutil
+import fcntl
+import argparse
 
-### CONFIG ###
-BLOCK_SIZE=4096
-OFFSET_MB=100
-MIN_GOOD_GB=5
-START_BLOCK=2048
-BADFILE="/tmp/badblocks.txt"
-REPORT_TXT="/tmp/bad-disk-report.txt"
-REPORT_PDF="/tmp/bad-disk-report.pdf"
-LOGFILE="/var/log/bad-disk-partitioner.log"
+# Check root
+if os.geteuid() != 0:
+    messagebox.showerror("Error", "This tool must be run as root (sudo).")
+    sys.exit(1)
 
-# Redirect stdout/stderr to log
-exec > >(tee -a "$LOGFILE") 2>&1
+BLOCK_SIZE = 4096
+BUFFER_MB = 500
+MIN_PARTITION_GB = 10
+TEMP_DIR = tempfile.mkdtemp(prefix="bad_disk_partitioner_")
+BADFILE = os.path.join(TEMP_DIR, "badblocks.txt")
 
-log() { echo "[$(date '+%F %T')] $1"; }
+class BadDiskPartitioner:
+    def __init__(self):
+        self.disks = self.get_disks()
+        if not self.disks:
+            messagebox.showerror("Error", "No disks found!")
+            sys.exit(1)
+        self.selected_disk = None
+        self.mode = None  # "scan" or "aggressive"
+        self.setup_mode_selection()
 
-### CHECK DEPENDENCIES ###
-REQUIRED_CMDS=(dialog lsblk badblocks parted blockdev awk sort grep enscript ps2pdf smartctl)
-APT_PACKAGES=(dialog util-linux e2fsprogs parted coreutils gawk enscript ghostscript smartmontools)
+    def get_disks(self):
+        disks = []
+        try:
+            result = subprocess.run(['lsblk', '-d', '-o', 'NAME,SIZE,MODEL', '--noheadings'],
+                                  capture_output=True, text=True)
+            for line in result.stdout.strip().split('\n'):
+                if line.strip():
+                    parts = line.split(maxsplit=2)
+                    name = parts[0]
+                    disk_path = f"/dev/{name}"
+                    if os.path.exists(disk_path):
+                        model = parts[2] if len(parts) > 2 else "Unknown"
+                        size = parts[1]
+                        disks.append((disk_path, f"{model} [{size}]"))
+        except Exception as e:
+            print(f"Error loading disks: {e}", file=sys.stderr)
+        return disks
 
-for cmd in "${REQUIRED_CMDS[@]}"; do
-  if ! command -v "$cmd" &>/dev/null; then
-    log "Installing missing dependencies..."
-    sudo apt update && sudo apt install -y "${APT_PACKAGES[@]}"
-    break
-  fi
-done
+    def setup_mode_selection(self):
+        root = tk.Tk()
+        root.title("Bad Disk Partitioner")
+        root.geometry("500x250")
+        root.resizable(False, False)
 
-### SELECT DISK ###
-DISK_LIST=()
-i=1
-while read -r name size model; do
-  DISK_LIST+=("$i" "/dev/$name  [$model, $size]")
-  ((i++))
-done < <(lsblk -d -o NAME,SIZE,MODEL --noheadings)
+        ttk.Label(root, text="Select Operation Mode", font=("Arial", 12, "bold")).pack(pady=15)
 
-CHOICE=$(dialog \
-  --clear --title "Select Disk" \
-  --menu "Choose the disk to check" 20 70 10 \
-  "${DISK_LIST[@]}" \
-  3>&1 1>&2 2>&3)
+        self.mode_var = tk.StringVar(value="scan")
+        ttk.Radiobutton(root, text="SCAN ONLY (read-only, safe)", variable=self.mode_var, value="scan").pack(anchor=tk.W, padx=50, pady=5)
+        ttk.Radiobutton(root, text="AGGRESSIVE (write + verify, destructive!)", variable=self.mode_var, value="aggressive").pack(anchor=tk.W, padx=50, pady=5)
 
-[ -z "$CHOICE" ] && exit 1
-DISK=$(echo "${DISK_LIST[$((CHOICE*2-1))]}" | awk '{print $1}')
-log "Selected disk: $DISK"
+        ttk.Button(root, text="Next", command=lambda: self.mode_selected(root)).pack(pady=20)
+        root.mainloop()
 
-### CHECK EXISTING PARTITIONS ###
-if lsblk "$DISK" -n -o NAME | grep -q "$(basename "$DISK")[0-9]"; then
-  dialog --msgbox "The disk already has partitions.\nOperation aborted." 8 50
-  log "Abort: existing partitions"
-  exit 1
-fi
+    def mode_selected(self, root):
+        self.mode = self.mode_var.get()
+        root.destroy()
+        self.select_disk()
 
-### CONFIRMATION ###
-dialog --yesno "⚠️ WARNING ⚠️\n\nDisk $DISK will be scanned and partitioned.\nALL DATA WILL BE LOST.\n\nProceed?" 12 60
-[ $? -ne 0 ] && log "Canceled by user" && exit 1
+    def select_disk(self):
+        root = tk.Tk()
+        root.title("Select Disk")
+        root.geometry("600x400")
 
-### SMART CHECK ###
-if command -v smartctl &>/dev/null; then
-  log "Checking SMART status..."
-  SMART_REPORT="/tmp/smart-$DISK.txt"
-  sudo smartctl -a "$DISK" > "$SMART_REPORT"
-  dialog --title "SMART Report" --textbox "$SMART_REPORT" 20 80
-fi
+        ttk.Label(root, text="Select disk to scan:", font=("Arial", 11, "bold")).pack(pady=10)
 
-### BADBLOCKS SCAN ###
-TOTAL_BLOCKS=$(blockdev --getsz "$DISK")
-OFFSET_BLOCKS=$((OFFSET_MB * 1024 * 1024 / BLOCK_SIZE))
-MIN_GOOD_BLOCKS=$((MIN_GOOD_GB * 1024 * 1024 * 1024 / BLOCK_SIZE))
+        listbox = tk.Listbox(root, width=80, height=15)
+        for disk, desc in self.disks:
+            listbox.insert(tk.END, f"{disk} - {desc}")
+        listbox.pack(padx=20, pady=10)
 
-dialog --infobox "Scanning for bad blocks...\nThis may take a long time..." 6 50
-log "Starting badblocks scan"
+        def on_select():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showwarning("Warning", "Please select a disk.")
+                return
+            self.selected_disk = self.disks[sel[0]][0]
+            # Verify no partitions
+            try:
+                out = subprocess.check_output(['lsblk', '-no', 'NAME', self.selected_disk], stderr=subprocess.DEVNULL).decode()
+                base = os.path.basename(self.selected_disk)
+                has_part = any(n.strip() != base and base in n for n in out.strip().split('\n') if n.strip())
+                if has_part:
+                    messagebox.showerror("Error", f"Disk {self.selected_disk} has partitions!\nRemove them first.")
+                    return
+            except:
+                pass
+            root.destroy()
+            if self.mode == "aggressive":
+                if messagebox.askyesno("DANGER", "AGGRESSIVE MODE WILL DESTROY ALL DATA!\n\nAre you sure?"):
+                    AggressiveScanner(self.selected_disk)
+                else:
+                    sys.exit(0)
+            else:
+                ReadOnlyScanner(self.selected_disk)
 
-# badblocks with real-time gauge
-{
-  badblocks -b $BLOCK_SIZE -sv "$DISK" | while read line; do
-    if [[ "$line" =~ ([0-9]+)% ]]; then
-        PERCENT="${BASH_REMATCH[1]}"
-        echo $PERCENT
-    fi
-  done
-} | dialog --title "Bad Blocks Scan" --gauge "Scanning..." 10 70 0
+        ttk.Button(root, text="Select", command=on_select).pack(pady=10)
+        root.mainloop()
 
-log "Scan completed, saved to $BADFILE"
+class ReadOnlyScanner:
+    def __init__(self, disk):
+        self.disk = disk
+        self.start_time = time.time()
+        self.total_blocks = 0
+        self.current_blocks = 0
 
-### EXPORT REPORT ###
-{
-  echo "Bad Disk Partition Report"
-  echo "Date: $(date)"
-  echo "Disk: $DISK"
-  echo "Total blocks: $TOTAL_BLOCKS"
-  echo
-  echo "Bad blocks:"
-  cat "$BADFILE"
-} > "$REPORT_TXT"
+        try:
+            self.disk_size_bytes = int(subprocess.check_output(['blockdev', '--getsize64', disk]).decode().strip())
+            self.total_blocks = int(subprocess.check_output(['blockdev', '--getsz', disk]).decode().strip())
+        except:
+            messagebox.showerror("Error", "Cannot get disk size")
+            sys.exit(1)
 
-enscript -B -o - "$REPORT_TXT" | ps2pdf - "$REPORT_PDF"
-log "PDF report generated: $REPORT_PDF"
+        self.setup_ui()
+        self.start_scan()
 
-### PARTITION CREATION ###
-log "Creating GPT partition table..."
-parted -s "$DISK" mklabel gpt
+    def setup_ui(self):
+        self.root = tk.Tk()
+        self.root.title("READ-ONLY Scan")
+        self.root.geometry("700x400")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-CURRENT_START=$START_BLOCK
-sort -n "$BADFILE" | while read BAD; do
-  END_BLOCK=$((BAD - OFFSET_BLOCKS))
-  GOOD_SIZE=$((END_BLOCK - CURRENT_START))
+        ttk.Label(self.root, text=f"Disk: {self.disk}", font=("Arial", 12, "bold")).pack(pady=5)
 
-  if [ "$GOOD_SIZE" -ge "$MIN_GOOD_BLOCKS" ]; then
-    START_MB=$((CURRENT_START * BLOCK_SIZE / 1024 / 1024))
-    END_MB=$((END_BLOCK * BLOCK_SIZE / 1024 / 1024))
-    log "Creating partition ${START_MB}MB - ${END_MB}MB"
-    parted -s "$DISK" mkpart primary "${START_MB}MB" "${END_MB}MB"
-  fi
+        self.current_time_var = tk.StringVar()
+        self.elapsed_var = tk.StringVar()
+        self.remaining_var = tk.StringVar()
+        self.percent_var = tk.StringVar(value="0%")
+        self.speed_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Starting...")
 
-  CURRENT_START=$((BAD + OFFSET_BLOCKS))
-done
+        info_frame = ttk.Frame(self.root)
+        info_frame.pack(pady=10)
+        fields = [
+            ("Current time  :", self.current_time_var),
+            ("Time elapsed  :", self.elapsed_var),
+            ("Time remaining:", self.remaining_var),
+            ("Progress      :", self.percent_var),
+            ("Speed         :", self.speed_var),
+            ("Status        :", self.status_var)
+        ]
+        for i, (label, var) in enumerate(fields):
+            row, col = divmod(i, 2)
+            tk.Label(info_frame, text=label, font=("Courier", 10)).grid(row=row, column=col*2, sticky=tk.W, padx=(10,0))
+            tk.Label(info_frame, textvariable=var, font=("Courier", 10, "bold")).grid(row=row, column=col*2+1, sticky=tk.W, padx=(5,15))
 
-# last good area
-REMAINING=$((TOTAL_BLOCKS - CURRENT_START))
-if [ "$REMAINING" -ge "$MIN_GOOD_BLOCKS" ]; then
-  START_MB=$((CURRENT_START * BLOCK_SIZE / 1024 / 1024))
-  END_MB=$((TOTAL_BLOCKS * BLOCK_SIZE / 1024 / 1024))
-  log "Creating final partition ${START_MB}MB - ${END_MB}MB"
-  parted -s "$DISK" mkpart primary "${START_MB}MB" "${END_MB}MB"
-fi
+        self.progress = ttk.Progressbar(self.root, mode='determinate', length=600)
+        self.progress.pack(pady=10)
 
-dialog --msgbox "Operation completed.\n\nLog: $LOGFILE\nPDF report: $REPORT_PDF\nPartitions are NOT formatted." 12 70
-log "Script finished"
+        self.log_text = tk.Text(self.root, height=6, state=tk.DISABLED, font=("Courier", 9))
+        self.log_text.pack(pady=10, padx=20, fill=tk.BOTH)
 
+    def log_msg(self, msg):
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state=tk.DISABLED)
+
+    def format_time(self, sec):
+        s = int(sec)
+        return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+
+    def start_scan(self):
+        self.log_msg("Starting READ-ONLY scan...")
+        cmd = ['badblocks', '-b', str(BLOCK_SIZE), '-sv', '-o', BADFILE, self.disk]
+
+        self.scan_process = subprocess.Popen(
+            cmd,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            universal_newlines=False,
+            bufsize=0
+        )
+
+        fd = self.scan_process.stderr.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+        self.root.after(1000, self.update_ui)
+        self.root.after(200, self.read_stderr)
+        self.root.mainloop()
+
+    def update_ui(self):
+        if self.scan_process.poll() is not None:
+            self.finalize()
+            return
+
+        now = time.time()
+        elapsed = now - self.start_time
+        percent = min(99, int(100 * self.current_blocks / self.total_blocks)) if self.total_blocks > 0 else 0
+
+        speed_mbs = 0
+        remaining_sec = 0
+        if elapsed > 5 and self.current_blocks > 0:
+            speed_blocks = self.current_blocks / elapsed
+            speed_mbs = speed_blocks * BLOCK_SIZE / (1024*1024)
+            if speed_blocks > 0:
+                remaining_sec = (self.total_blocks - self.current_blocks) / speed_blocks
+
+        self.current_time_var.set(datetime.now().strftime('%H:%M:%S'))
+        self.elapsed_var.set(self.format_time(elapsed))
+        self.remaining_var.set(self.format_time(remaining_sec))
+        self.percent_var.set(f"{percent}%")
+        self.speed_var.set(f"{speed_mbs:.1f} MB/s")
+        self.status_var.set("Scanning...")
+
+        self.progress['value'] = percent
+        self.root.after(1000, self.update_ui)
+
+    def read_stderr(self):
+        if self.scan_process.poll() is None:
+            try:
+                data = self.scan_process.stderr.read()
+                if data:
+                    text = data.decode('utf-8', errors='replace')
+                    for line in text.splitlines():
+                        if match := __import__('re').match(r'^(\d+)\s+done$', line):
+                            self.current_blocks = int(match.group(1))
+            except (OSError, IOError):
+                pass
+            self.root.after(200, self.read_stderr)
+
+    def finalize(self):
+        self.progress['value'] = 100
+        self.percent_var.set("100%")
+        self.status_var.set("Scan complete!")
+
+        self.scan_process.wait()
+        bad_count = 0
+        if os.path.exists(BADFILE):
+            with open(BADFILE) as f:
+                bad_count = sum(1 for line in f if line.strip().isdigit())
+
+        messagebox.showinfo("Done", f"READ-ONLY scan finished!\nBad blocks: {bad_count}\nReport: {BADFILE}")
+        self.root.quit()
+
+    def on_close(self):
+        shutil.rmtree(TEMP_DIR, ignore_errors=True)
+        self.root.destroy()
+        sys.exit(0)
+
+class AggressiveScanner:
+    def __init__(self, disk):
+        self.disk = disk
+        self.total_passes = 4
+        self.completed_passes = 0
+        self.start_time = time.time()
+
+        try:
+            self.disk_size_bytes = int(subprocess.check_output(['blockdev', '--getsize64', disk]).decode().strip())
+        except:
+            messagebox.showerror("Error", "Cannot get disk size")
+            sys.exit(1)
+
+        self.setup_ui()
+        self.start_scan()
+
+    def setup_ui(self):
+        self.root = tk.Tk()
+        self.root.title("AGGRESSIVE Scan")
+        self.root.geometry("720x460")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        ttk.Label(self.root, text=f"Disk: {self.disk}", font=("Arial", 12, "bold")).pack(pady=5)
+
+        self.current_time_var = tk.StringVar()
+        self.elapsed_var = tk.StringVar()
+        self.remaining_var = tk.StringVar()
+        self.percent_var = tk.StringVar(value="0%")
+        self.speed_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Starting...")
+
+        info_frame = ttk.Frame(self.root)
+        info_frame.pack(pady=10)
+        fields = [
+            ("Current time  :", self.current_time_var),
+            ("Time elapsed  :", self.elapsed_var),
+            ("Time remaining:", self.remaining_var),
+            ("Progress      :", self.percent_var),
+            ("Speed         :", self.speed_var),
+            ("Status        :", self.status_var)
+        ]
+        for i, (label, var) in enumerate(fields):
+            row, col = divmod(i, 2)
+            tk.Label(info_frame, text=label, font=("Courier", 10)).grid(row=row, column=col*2, sticky=tk.W, padx=(10,0))
+            tk.Label(info_frame, textvariable=var, font=("Courier", 10, "bold")).grid(row=row, column=col*2+1, sticky=tk.W, padx=(5,15))
+
+        self.progress = ttk.Progressbar(self.root, mode='determinate', length=650)
+        self.progress.pack(pady=10)
+
+        self.log_text = tk.Text(self.root, height=8, state=tk.DISABLED, font=("Courier", 9))
+        self.log_text.pack(pady=10, padx=20, fill=tk.BOTH)
+
+    def log_msg(self, msg):
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state=tk.DISABLED)
+
+    def format_time(self, sec):
+        s = int(sec)
+        return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+
+    def start_scan(self):
+        self.log_msg("Starting AGGRESSIVE scan (4 passes)...")
+        cmd = ['badblocks', '-b', str(BLOCK_SIZE), '-wsv', '-o', BADFILE, self.disk]
+
+        self.scan_process = subprocess.Popen(
+            cmd,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            universal_newlines=False,
+            bufsize=0
+        )
+
+        fd = self.scan_process.stderr.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+        self.root.after(1000, self.update_ui)
+        self.root.after(300, self.read_stderr)
+        self.root.mainloop()
+
+    def update_ui(self):
+        if self.scan_process.poll() is not None:
+            self.finalize()
+            return
+
+        now = time.time()
+        elapsed = now - self.start_time
+        percent = min(99, int(100 * self.completed_passes / self.total_passes))
+
+        if self.completed_passes > 0:
+            time_per_pass = elapsed / self.completed_passes
+            remaining_sec = (self.total_passes - self.completed_passes) * time_per_pass
+        else:
+            remaining_sec = (self.total_passes - self.completed_passes) * 3600
+
+        speed_mbs = (self.disk_size_bytes / (1024**2)) / elapsed if elapsed > 0 else 0
+
+        self.current_time_var.set(datetime.now().strftime('%H:%M:%S'))
+        self.elapsed_var.set(self.format_time(elapsed))
+        self.remaining_var.set(self.format_time(remaining_sec))
+        self.percent_var.set(f"{percent}%")
+        self.speed_var.set(f"{speed_mbs:.1f} MB/s")
+        self.status_var.set(f"Pass {self.completed_passes}/{self.total_passes} completed")
+
+        self.progress['value'] = percent
+        self.root.after(1000, self.update_ui)
+
+    def read_stderr(self):
+        if self.scan_process.poll() is None:
+            try:
+                data = self.scan_process.stderr.read()
+                if data:
+                    text = data.decode('utf-8', errors='replace')
+                    for line in text.splitlines():
+                        if ("Testing with pattern" in line or "Reading and comparing" in line) and "done" in line:
+                            self.completed_passes += 1
+                            self.log_msg(f"✅ Completed pass {self.completed_passes}/4")
+            except (OSError, IOError):
+                pass
+            self.root.after(300, self.read_stderr)
+
+    def finalize(self):
+        self.progress['value'] = 100
+        self.percent_var.set("100%")
+        self.status_var.set("Scan finished. Creating partitions...")
+
+        self.scan_process.wait()
+        self.create_partitions()
+        bad_count = 0
+        if os.path.exists(BADFILE):
+            with open(BADFILE) as f:
+                bad_count = sum(1 for line in f if line.strip().isdigit())
+
+        messagebox.showinfo("Done", f"AGGRESSIVE scan completed!\nBad blocks: {bad_count}\nPartitions created in healthy regions.")
+        self.root.quit()
+
+    def create_partitions(self):
+        bad_blocks = []
+        if os.path.exists(BADFILE):
+            with open(BADFILE) as f:
+                bad_blocks = sorted(set(int(line.strip()) for line in f if line.strip().isdigit()))
+
+        if not bad_blocks:
+            try:
+                subprocess.run(['parted', '-s', self.disk, 'mklabel', 'gpt'], check=False)
+                subprocess.run(['parted', '-s', self.disk, 'mkpart', 'primary', '1MiB', '100%'], check=False)
+                self.log_msg("✅ Created single partition (no bad blocks).")
+            except Exception as e:
+                self.log_msg(f"⚠️ Partitioning failed: {e}")
+            return
+
+        buffer_bytes = BUFFER_MB * 1024 * 1024
+        bad_ranges = []
+        for blk in bad_blocks:
+            start = max(1048576, blk * BLOCK_SIZE - buffer_bytes)
+            end = min(self.disk_size_bytes - 1, (blk + 1) * BLOCK_SIZE + buffer_bytes)
+            bad_ranges.append((start, end))
+
+        bad_ranges.sort()
+        merged = []
+        for s, e in bad_ranges:
+            if merged and s <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+        bad_ranges = merged
+
+        good_ranges = []
+        last_end = 1048576
+        for s, e in bad_ranges:
+            if s > last_end:
+                good_ranges.append((last_end, s - 1))
+            last_end = e + 1
+        if last_end < self.disk_size_bytes:
+            good_ranges.append((last_end, self.disk_size_bytes - 1))
+
+        min_bytes = MIN_PARTITION_GB * 1024**3
+        try:
+            subprocess.run(['parted', '-s', self.disk, 'mklabel', 'gpt'], check=False)
+            part_num = 1
+            for start, end in good_ranges:
+                if end - start + 1 >= min_bytes:
+                    start_mb = start // (1024*1024)
+                    end_mb = end // (1024*1024)
+                    subprocess.run(['parted', '-s', self.disk, 'mkpart', 'primary', f'{start_mb}MB', f'{end_mb}MB'], check=False)
+                    self.log_msg(f"✅ Partition {part_num}: {start_mb}MB–{end_mb}MB")
+                    part_num += 1
+        except Exception as e:
+            self.log_msg(f"⚠️ Partitioning error: {e}")
+
+    def on_close(self):
+        shutil.rmtree(TEMP_DIR, ignore_errors=True)
+        self.root.destroy()
+        sys.exit(0)
+
+if __name__ == "__main__":
+    app = BadDiskPartitioner()
