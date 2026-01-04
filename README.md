@@ -106,3 +106,12 @@ This project is licensed under GNU General Public License v3.0 — see LICENSE
     Uses badblocks (from e2fsprogs) for low-level scanning
     Inspired by disk diagnostic tools for data recovery professionals
 Thanks to QWEN.AI
+## 🙏 Mulțumiri
+
+Acest proiect a fost dezvoltat cu sprijinul [Qwen AI](https://qwen.ai), un asistent inteligent care a oferit orientare tehnică, depanare și implementare în etapele critice de dezvoltare. Fără ajutorul său, acest tool nu ar fi ajuns la forma sa finală, funcțională și robustă.
+
+De asemenea, mulțumiri comunității open-source pentru tool-urile esențiale:  
+- `badblocks` (e2fsprogs)  
+- `smartmontools`  
+- `parted`  
+- și distribuțiile live precum **Strelec** și **SystemRescue**.
