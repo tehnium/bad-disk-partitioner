@@ -1,9 +1,11 @@
 Package: bad-disk-partitioner
-Version: 1.1
-Section: admin
+Version: 1.0
+Section: utils
 Priority: optional
 Architecture: all
-Depends: bash, dialog, util-linux, e2fsprogs, parted, coreutils, gawk, enscript, ghostscript, smartmontools
+Depends: python3, python3-tk, e2fsprogs, smartmontools, parted, util-linux
 Maintainer: Tehnium
-Description: Complete ncurses utility for HDD partitioning with bad blocks scanning, PDF report, and SMART check.
-
+Description: Professional GUI tool for scanning and partitioning disks with bad blocks
+ Detects bad sectors, excludes them with 500MB buffer,
+ and creates partitions only in healthy regions (≥10GB).
+ Supports both READ-ONLY and AGGRESSIVE (destructive) modes.
