@@ -115,3 +115,8 @@ De asemenea, mulțumiri comunității open-source pentru tool-urile esențiale:
 - `smartmontools`  
 - `parted`  
 - și distribuțiile live precum **Strelec** și **SystemRescue**.
+### 2. Another way...download and use script
+sudo bash badpart_safe.sh /dev/sdX
+read progress with another terminal (ex. ssh):
+cd "$(ls -1dt /tmp/badpart-sda-* | head -1)"
+tail -f badpart.log
