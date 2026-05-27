@@ -179,4 +179,84 @@ build_parted_plan() {
   log "Building parted plan"
   {
     echo "unit MiB"
-    echo "mklabel $L
+    echo "mklabel $LABEL_TYPE"
+    n=1
+    while read -r s e; do
+      echo "mkpart good${n} ${FS_TYPE} ${s}MiB ${e}MiB"
+      n=$((n+1))
+    done < "$GOOD_TXT"
+    echo "print free"
+  } > "$PARTED_CMDS"
+
+  cat "$PARTED_CMDS"
+}
+
+wait_for_partition_node() {
+  local part="$1"
+  local i
+  for i in $(seq 1 20); do
+    [[ -b "$part" ]] && return 0
+    partprobe "$DEVICE" || true
+    command -v udevadm >/dev/null 2>&1 && udevadm settle || true
+    sleep 1
+  done
+  return 1
+}
+
+format_partitions_ntfs() {
+  log "Formatting partitions with NTFS quick format"
+  partprobe "$DEVICE" || true
+  command -v udevadm >/dev/null 2>&1 && udevadm settle || true
+  sleep 2
+
+  n=1
+  while read -r s e; do
+    if [[ "$DEVICE" =~ nvme|mmcblk ]]; then
+      PARTITION="${DEVICE}p${n}"
+    else
+      PARTITION="${DEVICE}${n}"
+    fi
+
+    if wait_for_partition_node "$PARTITION"; then
+      log "Formatting $PARTITION with NTFS quick format"
+      if [[ "$NTFS_MKFS" == "mkfs.ntfs" ]]; then
+        mkfs.ntfs -Q -L "GOOD${n}" "$PARTITION"
+      else
+        mkntfs -Q -L "GOOD${n}" "$PARTITION"
+      fi
+    else
+      log "ERROR: partition node not found: $PARTITION"
+      exit 1
+    fi
+
+    n=$((n+1))
+  done < "$GOOD_TXT"
+}
+
+apply_partition_plan() {
+  log "AUTO APPLY enabled: no confirmation prompt"
+  log "Writing partition table"
+  parted -s -a optimal "$DEVICE" --script "$(tr '\n' ' ' < "$PARTED_CMDS")"
+  sync
+  format_partitions_ntfs
+  log "Final layout"
+  parted -s "$DEVICE" unit MiB print free
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL "$DEVICE"
+  log "Done"
+}
+
+show_header
+smart_quicklook
+scan_disk
+
+if [[ ! -s "$BAD_TXT" ]]; then
+  log "No bad blocks found in the scan output"
+  build_single_full_partition_plan
+  log "Using one full-disk NTFS partition because no bad blocks were found"
+else
+  build_excluded_ranges
+  build_good_ranges
+fi
+
+build_parted_plan
+apply_partition_plan
