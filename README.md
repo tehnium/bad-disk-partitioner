@@ -1,49 +1,49 @@
 # badpart_safe.sh
 
-A Linux shell script for temporary reuse of failing HDDs by scanning the whole disk, excluding bad regions with a safety margin, creating partitions only in good areas, and formatting them as NTFS using quick format mode. This project is meant for damaged or unreliable disks that are no longer trusted for normal storage use. [web:269][web:270][web:90]
+`badpart_safe.sh` is a destructive Linux shell script that scans an entire disk with `badblocks`, isolates defective areas with a safety margin, creates partitions only in the remaining good regions, and formats them as NTFS using quick format mode (`mkfs.ntfs -Q`). The script is intended for temporary or low-trust reuse of problematic HDDs, not for reliable long-term storage.
 
-## Features
+## What it does
 
-- Full-disk read-only scan with `badblocks -sv`, with native percentage progress shown in the terminal. [web:91][web:92]
-- Saves detected bad blocks to a file using `badblocks -o`. [web:91][web:263]
-- Adds a 500 MiB safety offset around detected bad regions.
-- Merges excluded regions if they are closer than 20 GiB.
-- Creates a GPT partition layout only in the remaining safe areas using `parted`. [web:216][web:217]
-- Formats resulting partitions as NTFS using quick format mode `mkfs.ntfs -Q`. [web:249][web:253]
+The script performs these steps automatically:
 
-## Warning
+1. Reads the target disk size and basic SMART data when `smartctl` is available.
+2. Runs a full read-only scan with `badblocks -sv`, showing native progress percentage in the terminal.
+3. Writes only discovered bad block numbers to a text file via `badblocks -o`.
+4. Groups adjacent bad blocks into bad regions and adds a 500 MiB safety offset around each region.
+5. Merges excluded regions that are closer than 20 GiB.
+6. Builds a GPT partition layout only from the remaining good regions using `parted`.
+7. Creates the partitions and formats them with NTFS quick format using `mkfs.ntfs -Q`.
 
-This script is **destructive**. It repartitions and reformats the **entire target disk**. [web:216][web:217]
+## Important warning
 
-By using this script, the operator acknowledges that:
+This script **destroys all existing data** on the target disk.
 
-- all existing data on the selected disk will be lost;
-- selecting the wrong disk device will destroy data on that disk;
-- failing disks remain unreliable even after repartitioning;
-- this tool is intended only for temporary, low-trust, non-critical use.
+Use it only if the entire disk may be repartitioned and reformatted. The user is fully responsible for selecting the correct disk device, for example `/dev/sda` or `/dev/sdb`. Running the script against the wrong disk will erase that disk's partition table and filesystems.
 
-No warranty is provided. No responsibility is accepted for data loss, filesystem corruption, hardware failure, misuse, or any other consequence of running this script.
+No warranty is provided. No responsibility is accepted for data loss, filesystem corruption, hardware failure, target disk misidentification, or any other consequence of running this script.
 
-## Suitable use cases
+## Intended use
 
-- Temporary file transfer disks.
-- Scratch storage.
-- Short-term reuse of damaged HDDs.
-- Testing bad-region isolation on disks with media errors.
+This script is suitable for:
 
-## Not suitable for
+- Temporary transfer disks.
+- Low-value scratch storage.
+- Testing disks with known media defects.
+- Isolating bad areas on large HDDs for short-term reuse.
+
+This script is **not** suitable for:
 
 - Backups.
 - Long-term storage.
 - Important personal or business data.
 - Production systems.
-- RAID / NAS / server use.
+- RAID / NAS use.
 
-Disks with pending sectors, uncorrectable sectors, or repeated SMART read failures should still be treated as unsafe. [web:90][web:99]
+Disks that already show pending sectors, uncorrectable sectors, or repeated SMART read failures should still be considered unreliable even if this script completes successfully.
 
 ## Requirements
 
-Required tools:
+The script expects the following tools to be available on the Linux system:
 
 - `bash`
 - `badblocks`
@@ -61,7 +61,7 @@ Required tools:
 
 Optional but recommended:
 
-- `smartctl` from `smartmontools` for a quick SMART summary. [web:99]
+- `smartctl` from `smartmontools` for a quick SMART summary before scanning.
 - `udevadm` to help detect newly created partition nodes after repartitioning.
 
 ## Usage
@@ -78,36 +78,14 @@ Example:
 sudo bash badpart_safe.sh /dev/sdb
 ```
 
-## Run directly from GitHub
+The script will automatically:
 
-Safer method:
+- Scan the entire disk.
+- Compute bad regions.
+- Create a GPT layout from safe regions only.
+- Format resulting partitions as NTFS with quick format.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/tehnium/bad-disk-partitioner/main/badpart_safe.sh -o badpart_safe.sh
-chmod +x badpart_safe.sh
-sudo ./badpart_safe.sh /dev/sdX
-```
-
-Direct one-liner:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tehnium/bad-disk-partitioner/main/badpart_safe.sh | sudo bash -s -- /dev/sdX
-```
-
-## How it works
-
-1. Reads disk information and optional SMART summary. [web:90][web:99]
-2. Scans the entire disk in read-only mode with `badblocks`. [web:91][web:92]
-3. Builds excluded regions from detected bad blocks.
-4. Adds 500 MiB offset before and after each bad region.
-5. Merges excluded regions closer than 20 GiB.
-6. Builds safe partition ranges from the remaining disk space.
-7. Creates a GPT partition table with `parted`. [web:216][web:217]
-8. Formats the resulting partitions with NTFS quick format using `mkfs.ntfs -Q`. [web:249][web:253]
-
-If no bad blocks are found, the script creates one full-disk NTFS partition.
-
-## Output
+## Output files
 
 Each run creates a work directory in `/tmp/`, for example:
 
@@ -115,7 +93,7 @@ Each run creates a work directory in `/tmp/`, for example:
 /tmp/badpart-sdb-20260527-070000-12345/
 ```
 
-Typical files:
+Typical files inside that directory:
 
 - `badpart.log`
 - `badblocks.txt`
@@ -123,17 +101,52 @@ Typical files:
 - `good_ranges_mib.txt`
 - `parted_commands.txt`
 
-Follow the latest log with:
+To watch the live log:
+
+```bash
+tail -f /tmp/badpart-*/badpart.log
+```
+
+Or for the newest run:
 
 ```bash
 tail -f "$(ls -1dt /tmp/badpart-* | head -1)/badpart.log"
 ```
 
+## How the safety logic works
+
+- Every discovered bad region receives an additional 500 MiB exclusion margin on both sides.
+- If two excluded regions are less than 20 GiB apart, they are merged into one larger excluded region.
+- Partitions are created only from the good gaps left between excluded regions.
+- If no bad blocks are found, the script creates one full-disk NTFS partition.
+
+This behavior is intentionally conservative so unstable areas are not used too closely.
+
+## Run from GitHub
+
+Review the script before running it. Piping remote shell code directly into `bash` is convenient but risky.
+
+Recommended two-step method:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/badpart_safe.sh -o badpart_safe.sh
+chmod +x badpart_safe.sh
+sudo ./badpart_safe.sh /dev/sdX
+```
+
+Direct one-liner:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/badpart_safe.sh | sudo bash -s -- /dev/sdX
+```
+
+Replace `USER` and `REPO` with the actual GitHub account and repository name.
+
 ## Notes
 
-- Large disks may take many hours to scan. [web:90][web:91]
-- `badblocks.txt` may remain empty until actual bad blocks are found. [web:91][web:263]
-- NTFS quick format is used to avoid another long full initialization pass. [web:249][web:253]
+- The scan can take many hours on multi-terabyte HDDs.
+- `badblocks.txt` may remain empty until actual bad blocks are found.
+- NTFS quick format (`-Q`) is used to avoid another long full initialization pass.
 - Avoid USB disconnects, cable movement, or power loss during scanning and formatting.
 
 ## Disclaimer
