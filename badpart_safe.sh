@@ -20,9 +20,18 @@ if [[ ! -b "$DEVICE" ]]; then
   exit 1
 fi
 
-for cmd in badblocks blockdev lsblk awk sed sort parted tee stdbuf date mkfs.ntfs; do
+for cmd in badblocks blockdev lsblk awk sed sort parted tee stdbuf date partprobe; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "Missing command: $cmd"; exit 1; }
 done
+
+if command -v mkfs.ntfs >/dev/null 2>&1; then
+  NTFS_MKFS="mkfs.ntfs"
+elif command -v mkntfs >/dev/null 2>&1; then
+  NTFS_MKFS="mkntfs"
+else
+  echo "Missing NTFS formatter: mkfs.ntfs or mkntfs"
+  exit 1
+fi
 
 WORKDIR="/tmp/badpart-$(basename "$DEVICE")-$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -p "$WORKDIR"
@@ -170,76 +179,4 @@ build_parted_plan() {
   log "Building parted plan"
   {
     echo "unit MiB"
-    echo "mklabel $LABEL_TYPE"
-    n=1
-    while read -r s e; do
-      echo "mkpart good${n} ${FS_TYPE} ${s}MiB ${e}MiB"
-      n=$((n+1))
-    done < "$GOOD_TXT"
-    echo "print free"
-  } > "$PARTED_CMDS"
-
-  cat "$PARTED_CMDS"
-}
-
-format_partitions_ntfs() {
-  log "Formatting partitions with NTFS"
-  partprobe "$DEVICE" || true
-  sleep 2
-
-  n=1
-  while read -r s e; do
-    if [[ "$DEVICE" =~ nvme|mmcblk ]]; then
-      PARTITION="${DEVICE}p${n}"
-    else
-      PARTITION="${DEVICE}${n}"
-    fi
-
-    if [[ -b "$PARTITION" ]]; then
-      log "Formatting $PARTITION with NTFS"
-      mkfs.ntfs -F -L "GOOD${n}" "$PARTITION"
-    else
-      log "Warning: $PARTITION does not exist, skipping format"
-    fi
-    n=$((n+1))
-  done < "$GOOD_TXT"
-}
-
-confirm_and_apply() {
-  echo
-  echo "WARNING: This will destroy all existing partitions on $DEVICE."
-  read -r -p "Type YES to write the new partition table and format with NTFS: " ANSWER
-  [[ "$ANSWER" == "YES" ]] || { log "Aborted by user"; exit 0; }
-
-  log "Writing partition table"
-  parted -s -a optimal "$DEVICE" --script "$(tr '\n' ' ' < "$PARTED_CMDS")"
-
-  format_partitions_ntfs
-
-  log "Final layout"
-  parted -s "$DEVICE" unit MiB print free
-  log "Done"
-}
-
-show_header
-smart_quicklook
-scan_disk
-
-if [[ ! -s "$BAD_TXT" ]]; then
-  log "No bad blocks found in the scan output"
-  echo
-  read -r -p "Create one full-disk NTFS partition anyway? [y/N]: " MAKEFULL
-  if [[ "$MAKEFULL" =~ ^[Yy]$ ]]; then
-    build_single_full_partition_plan
-    log "Using one full-disk partition because no bad blocks were found"
-  else
-    log "Nothing to do"
-    exit 0
-  fi
-else
-  build_excluded_ranges
-  build_good_ranges
-fi
-
-build_parted_plan
-confirm_and_apply
+    echo "mklabel $L
