@@ -129,7 +129,7 @@ Review the script before running it. Piping remote shell code directly into `bas
 Recommended two-step method:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/badpart_safe.sh -o badpart_safe.sh
+curl -fsSL https://raw.githubusercontent.com/tehnium/bad-disk-partitioner/main/badpart_safe.sh -o badpart_safe.sh
 chmod +x badpart_safe.sh
 sudo ./badpart_safe.sh /dev/sdX
 ```
@@ -137,10 +137,8 @@ sudo ./badpart_safe.sh /dev/sdX
 Direct one-liner:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/badpart_safe.sh | sudo bash -s -- /dev/sdX
+curl -fsSL https://raw.githubusercontent.com/tehnium/bad-disk-partitioner/main/badpart_safe.sh | sudo bash -s -- /dev/sdX
 ```
-
-Replace `USER` and `REPO` with the actual GitHub account and repository name.
 
 ## Notes
 
