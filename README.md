@@ -1,122 +1,141 @@
-# Bad Disk Partitioner
+# badpart_safe.sh
 
-This project is inspired by an older tool developed by Dmitri Primochenko called Repartition Bad Drive, which ran on Windows but had specific hardware requirements, such as requiring the HDD to be in IDE mode. My application aims to achieve the same results on Linux (Debian-based distributions).
+A Linux shell script for temporary reuse of failing HDDs by scanning the whole disk, excluding bad regions with a safety margin, creating partitions only in good areas, and formatting them as NTFS using quick format mode. This project is meant for damaged or unreliable disks that are no longer trusted for normal storage use. [web:269][web:270][web:90]
 
-## Key Features and Workflow:
-Automated Setup: It automatically installs all necessary dependencies.
+## Features
 
-Safety Check: The app checks if the HDD has existing partitions; if it does, the application will close to prevent accidental data loss.
+- Full-disk read-only scan with `badblocks -sv`, with native percentage progress shown in the terminal. [web:91][web:92]
+- Saves detected bad blocks to a file using `badblocks -o`. [web:91][web:263]
+- Adds a 500 MiB safety offset around detected bad regions.
+- Merges excluded regions if they are closer than 20 GiB.
+- Creates a GPT partition layout only in the remaining safe areas using `parted`. [web:216][web:217]
+- Formats resulting partitions as NTFS using quick format mode `mkfs.ntfs -Q`. [web:249][web:253]
 
-Partition Management: Just like the original RBD, this tool destroys all existing partitions on the selected drive. I strongly recommend that you back up your data and manually delete all partitions before running this program.
+## Warning
 
-Drive Selection: It lists all active HDDs so you can choose which one to scan.
+This script is **destructive**. It repartitions and reformats the **entire target disk**. [web:216][web:217]
 
-Scanning Logic: When a bad sector is detected, the app creates an unformatted partition that ends 500 MB before the bad sector and starts a new one 500 MB after it. To avoid excessive fragmentation, a new partition will not be created if the bad sectors are less than 10 GB apart.
+By using this script, the operator acknowledges that:
 
+- all existing data on the selected disk will be lost;
+- selecting the wrong disk device will destroy data on that disk;
+- failing disks remain unreliable even after repartitioning;
+- this tool is intended only for temporary, low-trust, non-critical use.
 
-## Disclaimer:
-I ASSUME NO RESPONSIBILITY FOR ANY DATA LOSS. Please take all necessary precautions to ensure no mistakes are made during the process.
+No warranty is provided. No responsibility is accepted for data loss, filesystem corruption, hardware failure, misuse, or any other consequence of running this script.
 
+## Suitable use cases
 
-# Bad Disk Partitioner
+- Temporary file transfer disks.
+- Scratch storage.
+- Short-term reuse of damaged HDDs.
+- Testing bad-region isolation on disks with media errors.
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)
-![License](https://img.shields.io/badge/License-GPLv3-green)
-![Platform](https://img.shields.io/badge/Platform-Linux-orange)
+## Not suitable for
 
-Professional GUI tool for scanning hard drives with bad sectors and creating safe partitions **only in healthy regions**.
+- Backups.
+- Long-term storage.
+- Important personal or business data.
+- Production systems.
+- RAID / NAS / server use.
 
-> 🔍 **Detects bad blocks**  
-> 🛡️ **Excludes them with 500 MB buffer**  
-> ✂️ **Creates partitions only if ≥10 GB of healthy space**  
-> 🖥️ **User-friendly Tkinter interface**  
-> ⚡ **Two modes: READ-ONLY (safe) and AGGRESSIVE (destructive)**
+Disks with pending sectors, uncorrectable sectors, or repeated SMART read failures should still be treated as unsafe. [web:90][web:99]
 
----
+## Requirements
 
-## ✨ Features
+Required tools:
 
-- **READ-ONLY Mode**: Non-destructive scan — detects bad blocks without writing.
-- **AGGRESSIVE Mode**: Destructive 4-pass write/read/verify test that forces reallocation.
-- **Smart Partitioning** (AGGRESSIVE only):
-  - Skips all bad blocks
-  - Leaves **500 MB safety margin** before and after each bad block
-  - Merges overlapping bad regions
-  - Creates GPT partitions **only in zones ≥10 GB**
-- **Real-time Progress**:
-  - Current time, elapsed time, estimated remaining time
-  - Speed (MB/s), percentage, status
-- **Automatic disk validation**: Refuses to run if disk has existing partitions.
+- `bash`
+- `badblocks`
+- `blockdev`
+- `lsblk`
+- `awk`
+- `sed`
+- `sort`
+- `parted`
+- `tee`
+- `stdbuf`
+- `date`
+- `partprobe`
+- `mkfs.ntfs` or `mkntfs`
 
----
+Optional but recommended:
 
-## 📦 Installation
+- `smartctl` from `smartmontools` for a quick SMART summary. [web:99]
+- `udevadm` to help detect newly created partition nodes after repartitioning.
 
-### Option 1: Install from `.deb` package (recommended)
+## Usage
+
+Run locally:
 
 ```bash
-# Download the latest .deb from Releases
-wget https://github.com/tehnium/bad-disk-partitioner/releases/latest/download/bad-disk-partitioner_1.0_all.deb
-
-# Install
-sudo dpkg -i bad-disk-partitioner_1.0_all.deb
-
-# If dependencies are missing:
-sudo apt install -f
-
-## ▶️ Usage
-    ⚠️ Must be run as root — the tool needs low-level disk access.
-
-The GUI will guide you through:
-
-    Mode selection (SCAN ONLY or AGGRESSIVE)
-    Disk selection (only disks without partitions are allowed)
-    Real-time scan with progress
-    Automatic partitioning (AGGRESSIVE mode only)
-
-## 🛠️ Build from source
-git clone https://github.com/your-username/bad-disk-partitioner.git
-cd bad-disk-partitioner
-./build-deb.sh
-sudo dpkg -i bad-disk-partitioner_1.0_all.deb
-
-## ⚠️ Warnings
-
-    AGGRESSIVE MODE DESTROYS ALL DATA on the selected disk.
-    Always backup important data before scanning.
-    Do not interrupt the scan — it may leave the disk in an inconsistent state.
-    This tool does not detect "slow" sectors — only sectors that fail read/write tests.
-
-## 📁 Output
-
-    Bad blocks list: saved in a temporary file (shown at end of scan)
-    Partitions: created but not formatted — you can choose your filesystem later
-
-## 🤝 Contributing
-
-Contributions are welcome! Please open an issue or submit a PR.
-
-## 📜 License
-
-This project is licensed under GNU General Public License v3.0 — see LICENSE
- for details.
-
-## 🙏 Acknowledgments
-
-    Uses badblocks (from e2fsprogs) for low-level scanning
-    Inspired by disk diagnostic tools for data recovery professionals
-Thanks to QWEN.AI
-## 🙏 Mulțumiri
-
-Acest proiect a fost dezvoltat cu sprijinul [Qwen AI](https://qwen.ai), un asistent inteligent care a oferit orientare tehnică, depanare și implementare în etapele critice de dezvoltare. Fără ajutorul său, acest tool nu ar fi ajuns la forma sa finală, funcțională și robustă.
-
-De asemenea, mulțumiri comunității open-source pentru tool-urile esențiale:  
-- `badblocks` (e2fsprogs)  
-- `smartmontools`  
-- `parted`  
-- și distribuțiile live precum **Strelec** și **SystemRescue**.
-### 2. Another way...download and use script
 sudo bash badpart_safe.sh /dev/sdX
-read progress with another terminal (ex. ssh):
-cd "$(ls -1dt /tmp/badpart-sda-* | head -1)"
-tail -f badpart.log
+```
+
+Example:
+
+```bash
+sudo bash badpart_safe.sh /dev/sdb
+```
+
+## Run directly from GitHub
+
+Safer method:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tehnium/bad-disk-partitioner/main/badpart_safe.sh -o badpart_safe.sh
+chmod +x badpart_safe.sh
+sudo ./badpart_safe.sh /dev/sdX
+```
+
+Direct one-liner:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tehnium/bad-disk-partitioner/main/badpart_safe.sh | sudo bash -s -- /dev/sdX
+```
+
+## How it works
+
+1. Reads disk information and optional SMART summary. [web:90][web:99]
+2. Scans the entire disk in read-only mode with `badblocks`. [web:91][web:92]
+3. Builds excluded regions from detected bad blocks.
+4. Adds 500 MiB offset before and after each bad region.
+5. Merges excluded regions closer than 20 GiB.
+6. Builds safe partition ranges from the remaining disk space.
+7. Creates a GPT partition table with `parted`. [web:216][web:217]
+8. Formats the resulting partitions with NTFS quick format using `mkfs.ntfs -Q`. [web:249][web:253]
+
+If no bad blocks are found, the script creates one full-disk NTFS partition.
+
+## Output
+
+Each run creates a work directory in `/tmp/`, for example:
+
+```text
+/tmp/badpart-sdb-20260527-070000-12345/
+```
+
+Typical files:
+
+- `badpart.log`
+- `badblocks.txt`
+- `excluded_ranges_mib.txt`
+- `good_ranges_mib.txt`
+- `parted_commands.txt`
+
+Follow the latest log with:
+
+```bash
+tail -f "$(ls -1dt /tmp/badpart-* | head -1)/badpart.log"
+```
+
+## Notes
+
+- Large disks may take many hours to scan. [web:90][web:91]
+- `badblocks.txt` may remain empty until actual bad blocks are found. [web:91][web:263]
+- NTFS quick format is used to avoid another long full initialization pass. [web:249][web:253]
+- Avoid USB disconnects, cable movement, or power loss during scanning and formatting.
+
+## Disclaimer
+
+Use at your own risk. The operator must understand that the whole selected disk will be scanned, repartitioned, and reformatted.
